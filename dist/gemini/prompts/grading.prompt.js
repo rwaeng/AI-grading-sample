@@ -1,7 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GRADING_FUNCTION = exports.GRADING_PROMPT = void 0;
-const vertexai_1 = require("@google-cloud/vertexai");
 exports.GRADING_PROMPT = `# Role
 당신은 냉철한 AI 채점관입니다.
 사용자의 답변을 [Golden Standard]와 비교하여 submit_junior_grading 도구를 호출하십시오.
@@ -27,45 +26,45 @@ exports.GRADING_FUNCTION = {
     name: 'submit_junior_grading',
     description: '주니어 개발자의 면접 답변을 평가하고 채점 결과를 제출합니다. 점수는 직접 계산하지 않고 등급(Enum)으로 전달합니다.',
     parameters: {
-        type: vertexai_1.SchemaType.OBJECT,
+        type: 'object',
         properties: {
             accuracy_level: {
-                type: vertexai_1.SchemaType.STRING,
+                type: 'string',
                 description: '[중요] 개념 정확성 (30점 비중). 주니어 평가의 핵심이므로 엄격히 판단.',
                 enum: ['PERFECT', 'MINOR_ERROR', 'WRONG'],
             },
             accuracy_reason: {
-                type: vertexai_1.SchemaType.STRING,
+                type: 'string',
                 description: '정확성 평가 상세 사유',
             },
             logic_level: {
-                type: vertexai_1.SchemaType.STRING,
+                type: 'string',
                 description: '[중요] 논리적 근거 (20점 비중). 답이 틀려도 논리가 좋으면 점수 부여.',
                 enum: ['CLEAR', 'WEAK', 'NONE'],
             },
             logic_reason: {
-                type: vertexai_1.SchemaType.STRING,
+                type: 'string',
                 description: '논리 평가 상세 사유',
             },
             depth_level: {
-                type: vertexai_1.SchemaType.STRING,
+                type: 'string',
                 description: "판단 기준: 사용자 답변에 '작동 원리(Mechanism)'나 '이유(Why)'에 대한 설명이 한 줄이라도 포함되면 DEEP, 단순히 '정의(Definition)'만 나열했으면 BASIC_ONLY 선택.",
                 enum: ['DEEP', 'BASIC_ONLY', 'NONE'],
             },
             depth_reason: {
-                type: vertexai_1.SchemaType.STRING,
+                type: 'string',
                 description: '깊이 평가 상세 사유',
             },
             is_complete_sentence: {
-                type: vertexai_1.SchemaType.BOOLEAN,
+                type: 'boolean',
                 description: '문장 완결성 (10점). 가산점 영역.',
             },
             has_application: {
-                type: vertexai_1.SchemaType.BOOLEAN,
+                type: 'boolean',
                 description: '실무 활용 사례 (20점). 주니어에게는 보너스 점수 영역이므로 없어도 관대하게 판단.',
             },
             mentoring_feedback: {
-                type: vertexai_1.SchemaType.STRING,
+                type: 'string',
                 description: '주니어 개발자의 성장을 위한 구체적인 학습 가이드 및 격려',
             },
         },

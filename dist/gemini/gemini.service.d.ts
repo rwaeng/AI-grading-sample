@@ -1,6 +1,5 @@
 import { OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { FunctionDeclaration } from '@google-cloud/vertexai';
 export interface GenerateOptions {
     temperature?: number;
     maxOutputTokens?: number;
@@ -19,12 +18,19 @@ export interface GenerateWithGroundingResult {
     sources: GroundingSource[];
     searchQueries: string[];
 }
+export interface FunctionDeclaration {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+}
 export declare class GeminiService implements OnModuleInit {
     private readonly configService;
-    private vertexAI;
+    private readonly logger;
+    private apiKey;
     private proModelName;
     private flashModelName;
     private flashLiteModelName;
+    private readonly BASE_URL;
     constructor(configService: ConfigService);
     onModuleInit(): void;
     generateWithPro(prompt: string, options?: GenerateOptions): Promise<GenerateWithGroundingResult>;
@@ -36,4 +42,5 @@ export declare class GeminiService implements OnModuleInit {
         };
         text?: string;
     }>;
+    private callGeminiApi;
 }

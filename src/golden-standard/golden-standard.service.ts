@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { GeminiService, GenerateWithGroundingResult, GroundingSource } from '../gemini/gemini.service';
+import { GeminiService, GroundingSource } from '../gemini/gemini.service';
 import { ValidationService } from '../validation/validation.service';
 import {
   GOLDEN_STANDARD_PROMPT,
@@ -55,7 +55,6 @@ export class GoldenStandardService {
       question,
       mergedDraft,
       validationResult,
-      allSources,
     );
     this.storage.set(goldenStandard.id, goldenStandard);
 
@@ -125,7 +124,6 @@ export class GoldenStandardService {
     question: string,
     draft: Record<string, unknown>,
     validationResult: { status: 'PASS' | 'FAIL'; filteredSources: string[] },
-    allSources: GroundingSource[],
   ): GoldenStandard {
     const questionId = uuidv4();
     const mechanism = draft.technical_mechanism as Record<string, string> || {};

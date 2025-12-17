@@ -36,7 +36,7 @@ let GoldenStandardService = GoldenStandardService_1 = class GoldenStandardServic
         const sourceUrls = allSources.map(s => s.uri);
         const validationResult = await this.validationService.validate(question, mergedDraft, sourceUrls);
         this.logger.log(`Validation status: ${validationResult.status}`);
-        const goldenStandard = this.createGoldenStandard(question, mergedDraft, validationResult, allSources);
+        const goldenStandard = this.createGoldenStandard(question, mergedDraft, validationResult);
         this.storage.set(goldenStandard.id, goldenStandard);
         return goldenStandard;
     }
@@ -74,7 +74,7 @@ let GoldenStandardService = GoldenStandardService_1 = class GoldenStandardServic
         });
         return this.parseJsonResponse(result.text);
     }
-    createGoldenStandard(question, draft, validationResult, allSources) {
+    createGoldenStandard(question, draft, validationResult) {
         const questionId = (0, uuid_1.v4)();
         const mechanism = draft.technical_mechanism || {};
         return {
