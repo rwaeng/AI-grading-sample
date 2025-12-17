@@ -2,10 +2,10 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   VertexAI,
-  GenerativeModel,
   FunctionDeclaration,
   Tool,
   GoogleSearchRetrieval,
+  GroundingChunk,
 } from '@google-cloud/vertexai';
 
 export interface GenerateOptions {
@@ -17,6 +17,17 @@ export interface GenerateOptions {
 export interface FunctionCallingOptions {
   functions: FunctionDeclaration[];
   temperature?: number;
+}
+
+export interface GroundingSource {
+  uri: string;
+  title: string;
+}
+
+export interface GenerateWithGroundingResult {
+  text: string;
+  sources: GroundingSource[];
+  searchQueries: string[];
 }
 
 @Injectable()
@@ -44,11 +55,12 @@ export class GeminiService implements OnModuleInit {
 
   /**
    * Gemini Pro로 모범 답안 생성 (Grounding with Google Search 지원)
+   * Grounding 사용 시 출처 정보도 함께 반환
    */
   async generateWithPro(
     prompt: string,
     options: GenerateOptions = {},
-  ): Promise<string> {
+  ): Promise<GenerateWithGroundingResult> {
     const { temperature = 0.7, maxOutputTokens = 8192, useGrounding = false } = options;
 
     const tools: Tool[] = [];
@@ -72,7 +84,33 @@ export class GeminiService implements OnModuleInit {
     });
 
     const response = result.response;
-    return response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    // Grounding 메타데이터에서 출처 정보 추출
+    const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+    const sources: GroundingSource[] = [];
+    const searchQueries: string[] = [];
+
+    if (groundingMetadata) {
+      // 검색 쿼리 추출
+      if (groundingMetadata.webSearchQueries) {
+        searchQueries.push(...groundingMetadata.webSearchQueries);
+      }
+
+      // 출처 URL 추출
+      if (groundingMetadata.groundingChunks) {
+        for (const chunk of groundingMetadata.groundingChunks as GroundingChunk[]) {
+          if (chunk.web) {
+            sources.push({
+              uri: chunk.web.uri || '',
+              title: chunk.web.title || '',
+            });
+          }
+        }
+      }
+    }
+
+    return { text, sources, searchQueries };
   }
 
   /**
@@ -145,14 +183,5 @@ export class GeminiService implements OnModuleInit {
     return {
       text: parts[0]?.text || '',
     };
-  }
-
-  /**
-   * Grounding 결과에서 URL 추출
-   */
-  extractUrlsFromGroundingMetadata(response: string): string[] {
-    const urlRegex = /https?:\/\/[^\s\])"'<>]+/g;
-    const matches = response.match(urlRegex) || [];
-    return [...new Set(matches)];
   }
 }

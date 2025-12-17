@@ -27,39 +27,54 @@ let GoldenStandardService = GoldenStandardService_1 = class GoldenStandardServic
     }
     async generate(question) {
         this.logger.log(`Generating golden standard for: ${question}`);
-        const drafts = await this.generateMultipleDrafts(question);
-        this.logger.log(`Generated ${drafts.length} draft answers`);
-        const mergedDraft = await this.mergeDrafts(drafts);
+        const draftsWithSources = await this.generateMultipleDrafts(question);
+        this.logger.log(`Generated ${draftsWithSources.length} draft answers`);
+        const allSources = this.collectUniqueSources(draftsWithSources);
+        this.logger.log(`Collected ${allSources.length} unique sources from grounding`);
+        const mergedDraft = await this.mergeDrafts(draftsWithSources.map(d => d.text));
         this.logger.log('Merged drafts into single answer');
-        const urls = this.geminiService.extractUrlsFromGroundingMetadata(JSON.stringify(mergedDraft));
-        this.logger.log(`Extracted ${urls.length} URLs from grounding`);
-        const validationResult = await this.validationService.validate(question, mergedDraft, urls);
+        const sourceUrls = allSources.map(s => s.uri);
+        const validationResult = await this.validationService.validate(question, mergedDraft, sourceUrls);
         this.logger.log(`Validation status: ${validationResult.status}`);
-        const goldenStandard = this.createGoldenStandard(question, mergedDraft, validationResult);
+        const goldenStandard = this.createGoldenStandard(question, mergedDraft, validationResult, allSources);
         this.storage.set(goldenStandard.id, goldenStandard);
         return goldenStandard;
     }
     async generateMultipleDrafts(question) {
         const temperatures = [0.7, 0.75, 0.8];
         const prompt = prompts_1.GOLDEN_STANDARD_PROMPT.replace('{{question}}', question);
-        const drafts = await Promise.all(temperatures.map((temperature) => this.geminiService.generateWithPro(prompt, {
+        const results = await Promise.all(temperatures.map((temperature) => this.geminiService.generateWithPro(prompt, {
             temperature,
             useGrounding: true,
         })));
-        return drafts;
+        return results.map((result) => ({
+            text: result.text,
+            sources: result.sources,
+        }));
+    }
+    collectUniqueSources(drafts) {
+        const sourceMap = new Map();
+        for (const draft of drafts) {
+            for (const source of draft.sources) {
+                if (source.uri && !sourceMap.has(source.uri)) {
+                    sourceMap.set(source.uri, source);
+                }
+            }
+        }
+        return Array.from(sourceMap.values());
     }
     async mergeDrafts(drafts) {
         const mergePrompt = prompts_1.MERGE_ANSWERS_PROMPT
             .replace('{{answer1}}', drafts[0])
             .replace('{{answer2}}', drafts[1])
             .replace('{{answer3}}', drafts[2]);
-        const mergedResponse = await this.geminiService.generateWithPro(mergePrompt, {
+        const result = await this.geminiService.generateWithPro(mergePrompt, {
             temperature: 0.3,
             useGrounding: false,
         });
-        return this.parseJsonResponse(mergedResponse);
+        return this.parseJsonResponse(result.text);
     }
-    createGoldenStandard(question, draft, validationResult) {
+    createGoldenStandard(question, draft, validationResult, allSources) {
         const questionId = (0, uuid_1.v4)();
         const mechanism = draft.technical_mechanism || {};
         return {

@@ -9,6 +9,7 @@ export declare class GoldenStandardService {
     constructor(geminiService: GeminiService, validationService: ValidationService);
     generate(question: string): Promise<GoldenStandard>;
     private generateMultipleDrafts;
+    private collectUniqueSources;
     private mergeDrafts;
     private createGoldenStandard;
     private parseJsonResponse;

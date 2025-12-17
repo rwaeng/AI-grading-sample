@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { GeminiService } from '../gemini/gemini.service';
+import { GeminiService, GenerateWithGroundingResult, GroundingSource } from '../gemini/gemini.service';
 import { ValidationService } from '../validation/validation.service';
 import {
   GOLDEN_STANDARD_PROMPT,
@@ -7,6 +7,11 @@ import {
 } from '../gemini/prompts';
 import { GoldenStandard } from '../common/interfaces';
 import { v4 as uuidv4 } from 'uuid';
+
+interface DraftWithSources {
+  text: string;
+  sources: GroundingSource[];
+}
 
 @Injectable()
 export class GoldenStandardService {
@@ -24,25 +29,24 @@ export class GoldenStandardService {
   async generate(question: string): Promise<GoldenStandard> {
     this.logger.log(`Generating golden standard for: ${question}`);
 
-    // Step 1: 3개의 다양한 답안 생성 (Temperature 0.7~0.8)
-    const drafts = await this.generateMultipleDrafts(question);
-    this.logger.log(`Generated ${drafts.length} draft answers`);
+    // Step 1: 3개의 다양한 답안 생성 (Temperature 0.7~0.8) + 출처 수집
+    const draftsWithSources = await this.generateMultipleDrafts(question);
+    this.logger.log(`Generated ${draftsWithSources.length} draft answers`);
 
-    // Step 2: 3개 답안 종합
-    const mergedDraft = await this.mergeDrafts(drafts);
+    // Step 2: 모든 출처 수집 (중복 제거)
+    const allSources = this.collectUniqueSources(draftsWithSources);
+    this.logger.log(`Collected ${allSources.length} unique sources from grounding`);
+
+    // Step 3: 3개 답안 종합
+    const mergedDraft = await this.mergeDrafts(draftsWithSources.map(d => d.text));
     this.logger.log('Merged drafts into single answer');
 
-    // Step 3: URL 추출
-    const urls = this.geminiService.extractUrlsFromGroundingMetadata(
-      JSON.stringify(mergedDraft),
-    );
-    this.logger.log(`Extracted ${urls.length} URLs from grounding`);
-
-    // Step 4: 교차 검증
+    // Step 4: 교차 검증 (groundingMetadata에서 추출한 URL 사용)
+    const sourceUrls = allSources.map(s => s.uri);
     const validationResult = await this.validationService.validate(
       question,
       mergedDraft,
-      urls,
+      sourceUrls,
     );
     this.logger.log(`Validation status: ${validationResult.status}`);
 
@@ -51,6 +55,7 @@ export class GoldenStandardService {
       question,
       mergedDraft,
       validationResult,
+      allSources,
     );
     this.storage.set(goldenStandard.id, goldenStandard);
 
@@ -58,13 +63,13 @@ export class GoldenStandardService {
   }
 
   /**
-   * 3개의 다양한 답안 생성
+   * 3개의 다양한 답안 생성 (출처 정보 포함)
    */
-  private async generateMultipleDrafts(question: string): Promise<string[]> {
+  private async generateMultipleDrafts(question: string): Promise<DraftWithSources[]> {
     const temperatures = [0.7, 0.75, 0.8];
     const prompt = GOLDEN_STANDARD_PROMPT.replace('{{question}}', question);
 
-    const drafts = await Promise.all(
+    const results = await Promise.all(
       temperatures.map((temperature) =>
         this.geminiService.generateWithPro(prompt, {
           temperature,
@@ -73,7 +78,27 @@ export class GoldenStandardService {
       ),
     );
 
-    return drafts;
+    return results.map((result) => ({
+      text: result.text,
+      sources: result.sources,
+    }));
+  }
+
+  /**
+   * 모든 출처에서 중복 제거
+   */
+  private collectUniqueSources(drafts: DraftWithSources[]): GroundingSource[] {
+    const sourceMap = new Map<string, GroundingSource>();
+    
+    for (const draft of drafts) {
+      for (const source of draft.sources) {
+        if (source.uri && !sourceMap.has(source.uri)) {
+          sourceMap.set(source.uri, source);
+        }
+      }
+    }
+
+    return Array.from(sourceMap.values());
   }
 
   /**
@@ -85,12 +110,12 @@ export class GoldenStandardService {
       .replace('{{answer2}}', drafts[1])
       .replace('{{answer3}}', drafts[2]);
 
-    const mergedResponse = await this.geminiService.generateWithPro(mergePrompt, {
+    const result = await this.geminiService.generateWithPro(mergePrompt, {
       temperature: 0.3,
       useGrounding: false,
     });
 
-    return this.parseJsonResponse(mergedResponse);
+    return this.parseJsonResponse(result.text);
   }
 
   /**
@@ -100,6 +125,7 @@ export class GoldenStandardService {
     question: string,
     draft: Record<string, unknown>,
     validationResult: { status: 'PASS' | 'FAIL'; filteredSources: string[] },
+    allSources: GroundingSource[],
   ): GoldenStandard {
     const questionId = uuidv4();
     const mechanism = draft.technical_mechanism as Record<string, string> || {};

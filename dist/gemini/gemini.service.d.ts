@@ -10,6 +10,15 @@ export interface FunctionCallingOptions {
     functions: FunctionDeclaration[];
     temperature?: number;
 }
+export interface GroundingSource {
+    uri: string;
+    title: string;
+}
+export interface GenerateWithGroundingResult {
+    text: string;
+    sources: GroundingSource[];
+    searchQueries: string[];
+}
 export declare class GeminiService implements OnModuleInit {
     private readonly configService;
     private vertexAI;
@@ -18,7 +27,7 @@ export declare class GeminiService implements OnModuleInit {
     private flashLiteModelName;
     constructor(configService: ConfigService);
     onModuleInit(): void;
-    generateWithPro(prompt: string, options?: GenerateOptions): Promise<string>;
+    generateWithPro(prompt: string, options?: GenerateOptions): Promise<GenerateWithGroundingResult>;
     generateWithFlash(prompt: string, options?: GenerateOptions): Promise<string>;
     generateWithFlashLite(prompt: string, options: FunctionCallingOptions): Promise<{
         functionCall?: {
@@ -27,5 +36,4 @@ export declare class GeminiService implements OnModuleInit {
         };
         text?: string;
     }>;
-    extractUrlsFromGroundingMetadata(response: string): string[];
 }

@@ -53,7 +53,26 @@ let GeminiService = class GeminiService {
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
         });
         const response = result.response;
-        return response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const text = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+        const sources = [];
+        const searchQueries = [];
+        if (groundingMetadata) {
+            if (groundingMetadata.webSearchQueries) {
+                searchQueries.push(...groundingMetadata.webSearchQueries);
+            }
+            if (groundingMetadata.groundingChunks) {
+                for (const chunk of groundingMetadata.groundingChunks) {
+                    if (chunk.web) {
+                        sources.push({
+                            uri: chunk.web.uri || '',
+                            title: chunk.web.title || '',
+                        });
+                    }
+                }
+            }
+        }
+        return { text, sources, searchQueries };
     }
     async generateWithFlash(prompt, options = {}) {
         const { temperature = 0.3, maxOutputTokens = 4096 } = options;
@@ -103,11 +122,6 @@ let GeminiService = class GeminiService {
         return {
             text: parts[0]?.text || '',
         };
-    }
-    extractUrlsFromGroundingMetadata(response) {
-        const urlRegex = /https?:\/\/[^\s\])"'<>]+/g;
-        const matches = response.match(urlRegex) || [];
-        return [...new Set(matches)];
     }
 };
 exports.GeminiService = GeminiService;
