@@ -13,6 +13,13 @@ export interface GoldenStandard {
   practicalApplication: string;
   filteredSources: string[];
   validationStatus: 'PASS' | 'FAIL' | 'PENDING';
+  validationDetails?: {
+    riskScore: number;
+    isSourceAuthoritative: boolean;
+    isFactuallyCorrect: boolean;
+    hasHallucination: boolean;
+  };
+  reviewComment?: string;
   createdAt: Date;
 }
 
@@ -42,6 +49,8 @@ export interface GradingResult {
   };
   evaluationReason: string;
   feedback: string;
+  similarity?: number;
+  embedding?: number[];
   createdAt: Date;
 }
 

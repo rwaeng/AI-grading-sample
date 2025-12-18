@@ -1,17 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { GeminiService, GroundingSource } from '../gemini/gemini.service';
+import { GeminiService } from '../gemini/gemini.service';
 import { ValidationService } from '../validation/validation.service';
-import {
-  GOLDEN_STANDARD_PROMPT,
-  MERGE_ANSWERS_PROMPT,
+import { 
+  GOLDEN_STANDARD_INSTRUCTION, 
+  MERGE_ANSWERS_INSTRUCTION 
 } from '../gemini/prompts';
 import { GoldenStandard } from '../common/interfaces';
 import { v4 as uuidv4 } from 'uuid';
-
-interface DraftWithSources {
-  text: string;
-  sources: GroundingSource[];
-}
 
 @Injectable()
 export class GoldenStandardService {
@@ -24,37 +19,79 @@ export class GoldenStandardService {
   ) {}
 
   /**
-   * 모범 답안 생성 (전체 파이프라인)
+   * 모범 답안 생성 (이미 존재하면 반환, 없으면 생성)
    */
   async generate(question: string): Promise<GoldenStandard> {
-    this.logger.log(`Generating golden standard for: ${question}`);
+    const existing = this.findByQuestionText(question);
+    if (existing) return existing;
 
-    // Step 1: 3개의 다양한 답안 생성 (Temperature 0.7~0.8) + 출처 수집
-    const draftsWithSources = await this.generateMultipleDrafts(question);
-    this.logger.log(`Generated ${draftsWithSources.length} draft answers`);
+    const results = await Promise.all([
+      this.geminiService.generateWithPro(
+        GOLDEN_STANDARD_INSTRUCTION.user(question), 
+        { systemInstruction: GOLDEN_STANDARD_INSTRUCTION.system, temperature: 0.1 }
+      ),
+      this.geminiService.generateWithPro(
+        GOLDEN_STANDARD_INSTRUCTION.user(question), 
+        { systemInstruction: GOLDEN_STANDARD_INSTRUCTION.system, temperature: 0.4 }
+      ),
+      this.geminiService.generateWithPro(
+        GOLDEN_STANDARD_INSTRUCTION.user(question), 
+        { systemInstruction: GOLDEN_STANDARD_INSTRUCTION.system, temperature: 0.7 }
+      ),
+    ]);
+    
+    // 🔍 URL 인덱싱
+    const sourceMap = new Map<string, string>();
+    const reverseSourceMap = new Map<string, string>();
+    let sourceCounter = 1;
 
-    // Step 2: 모든 출처 수집 (중복 제거)
-    const allSources = this.collectUniqueSources(draftsWithSources);
-    this.logger.log(`Collected ${allSources.length} unique sources from grounding`);
+    results.forEach(r => {
+      r.sources.forEach(s => {
+        if (!sourceMap.has(s.uri)) {
+          const key = `[S${sourceCounter++}]`;
+          sourceMap.set(s.uri, key);
+          reverseSourceMap.set(key, s.uri);
+        }
+      });
+    });
 
-    // Step 3: 3개 답안 종합
-    const mergedDraft = await this.mergeDrafts(draftsWithSources.map(d => d.text));
-    this.logger.log('Merged drafts into single answer');
+    const draftsJson = results.map(r => this.parseJsonResponse(r.text));
+    
+    // Step 2: Merge Drafts
+    this.logger.log(`[Synthesis] Merging 3 drafts into one using Flash Lite...`);
+    const draftsStr = JSON.stringify(draftsJson.map(d => ({
+      ...d,
+      reference_source: d.reference_source?.substring(0, 100)
+    })), null, 2);
+    
+    const mergedResult = await this.geminiService.generateWithFlashLite(
+      MERGE_ANSWERS_INSTRUCTION.user(draftsStr),
+      { systemInstruction: MERGE_ANSWERS_INSTRUCTION.system, temperature: 0.1 }
+    );
+    const finalDraftJson = this.parseJsonResponse(mergedResult.text);
 
-    // Step 4: 교차 검증 (groundingMetadata에서 추출한 URL 사용)
-    const sourceUrls = allSources.map(s => s.uri);
+    // Step 3: Validation (인덱스 리스트 전달)
+    this.logger.log(`[Validation] Cross-validating with indexed sources...`);
+    const indexedSourceList = Array.from(reverseSourceMap.entries())
+      .map(([key, url]) => `${key}: ${url.substring(0, 100)}...`) 
+      .join('\n');
+
     const validationResult = await this.validationService.validate(
       question,
-      mergedDraft,
-      sourceUrls,
+      finalDraftJson,
+      Array.from(reverseSourceMap.keys()),
+      indexedSourceList,
     );
-    this.logger.log(`Validation status: ${validationResult.status}`);
 
-    // Step 5: 저장
+    // 🔍 URL 복구: [S1] -> 실제 긴 URL
+    const actualFilteredSources = (validationResult.filteredSources || [])
+      .map(key => reverseSourceMap.get(key) || key);
+
+    // Step 4: Storage
     const goldenStandard = this.createGoldenStandard(
       question,
-      mergedDraft,
-      validationResult,
+      finalDraftJson,
+      { ...validationResult, filteredSources: actualFilteredSources },
     );
     this.storage.set(goldenStandard.id, goldenStandard);
 
@@ -62,59 +99,10 @@ export class GoldenStandardService {
   }
 
   /**
-   * 3개의 다양한 답안 생성 (출처 정보 포함)
+   * 질문 텍스트로 조회
    */
-  private async generateMultipleDrafts(question: string): Promise<DraftWithSources[]> {
-    const temperatures = [0.7, 0.75, 0.8];
-    const prompt = GOLDEN_STANDARD_PROMPT.replace('{{question}}', question);
-
-    const results = await Promise.all(
-      temperatures.map((temperature) =>
-        this.geminiService.generateWithPro(prompt, {
-          temperature,
-          useGrounding: true,
-        }),
-      ),
-    );
-
-    return results.map((result) => ({
-      text: result.text,
-      sources: result.sources,
-    }));
-  }
-
-  /**
-   * 모든 출처에서 중복 제거
-   */
-  private collectUniqueSources(drafts: DraftWithSources[]): GroundingSource[] {
-    const sourceMap = new Map<string, GroundingSource>();
-    
-    for (const draft of drafts) {
-      for (const source of draft.sources) {
-        if (source.uri && !sourceMap.has(source.uri)) {
-          sourceMap.set(source.uri, source);
-        }
-      }
-    }
-
-    return Array.from(sourceMap.values());
-  }
-
-  /**
-   * 3개 답안 종합
-   */
-  private async mergeDrafts(drafts: string[]): Promise<Record<string, unknown>> {
-    const mergePrompt = MERGE_ANSWERS_PROMPT
-      .replace('{{answer1}}', drafts[0])
-      .replace('{{answer2}}', drafts[1])
-      .replace('{{answer3}}', drafts[2]);
-
-    const result = await this.geminiService.generateWithPro(mergePrompt, {
-      temperature: 0.3,
-      useGrounding: false,
-    });
-
-    return this.parseJsonResponse(result.text);
+  private findByQuestionText(text: string): GoldenStandard | undefined {
+    return Array.from(this.storage.values()).find(s => s.question === text);
   }
 
   /**
@@ -122,68 +110,92 @@ export class GoldenStandardService {
    */
   private createGoldenStandard(
     question: string,
-    draft: Record<string, unknown>,
-    validationResult: { status: 'PASS' | 'FAIL'; filteredSources: string[] },
+    draft: Record<string, any>,
+    validationResult: { 
+      status: 'PASS' | 'FAIL'; 
+      filteredSources: string[];
+      riskScore?: number;
+      validationDetails?: {
+        isSourceAuthoritative: boolean;
+        isFactuallyCorrect: boolean;
+        hasHallucination: boolean;
+      };
+      reviewComment?: string;
+    },
   ): GoldenStandard {
-    const questionId = uuidv4();
-    const mechanism = draft.technical_mechanism as Record<string, string> || {};
+    const mechanism = draft.technical_mechanism || {};
 
     return {
       id: uuidv4(),
-      questionId,
+      questionId: uuidv4(),
       question,
-      referenceSource: (draft.reference_source as string) || '',
-      standardDefinition: (draft.standard_definition as string) || '',
+      referenceSource: draft.reference_source || '',
+      standardDefinition: draft.standard_definition || '',
       technicalMechanism: {
         basicPrinciple: mechanism.basic_principle || '',
         deepPrinciple: mechanism.deep_principle || '',
       },
-      keyTerminology: (draft.key_terminology as string[]) || [],
-      commonMisconceptions: (draft.common_misconceptions as string) || '',
-      practicalApplication: (draft.practical_application as string) || '',
-      filteredSources: validationResult.filteredSources,
+      keyTerminology: draft.key_terminology || [],
+      commonMisconceptions: draft.common_misconceptions || '',
+      practicalApplication: draft.practical_application || '',
+      filteredSources: validationResult.filteredSources || [],
       validationStatus: validationResult.status,
+      validationDetails: validationResult.validationDetails ? {
+        riskScore: validationResult.riskScore || 0,
+        ...validationResult.validationDetails,
+      } : undefined,
+      reviewComment: validationResult.reviewComment,
       createdAt: new Date(),
     };
   }
 
   /**
-   * JSON 응답 파싱
+   * JSON 응답 파싱 (Markdown 태그 유연하게 처리 + 잘림 대응)
    */
-  private parseJsonResponse(response: string): Record<string, unknown> {
+  private parseJsonResponse(response: string): Record<string, any> {
+    let cleanJson = response;
     try {
-      // JSON 블록 추출
+      // 1. ```json ... ``` 패턴 추출 시도
       const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/);
-      const jsonStr = jsonMatch ? jsonMatch[1] : response;
-      return JSON.parse(jsonStr.trim());
+      if (jsonMatch) {
+        cleanJson = jsonMatch[1];
+      } else {
+        // 2. 백틱만 있는 경우나 태그가 없는 경우 대응: 첫 '{'와 마지막 '}' 사이 추출
+        const start = response.indexOf('{');
+        const end = response.lastIndexOf('}');
+        if (start !== -1) {
+          cleanJson = end !== -1 && end > start 
+            ? response.substring(start, end + 1)
+            : response.substring(start); // 닫는 중괄호가 없으면 일단 끝까지 가져옴
+        }
+      }
+
+      let trimmedJson = cleanJson.trim();
+
+      // 3. 간단한 JSON 복구: 닫는 중괄호가 부족할 경우 인위적으로 추가
+      const openBraces = (trimmedJson.match(/\{/g) || []).length;
+      const closeBraces = (trimmedJson.match(/\}/g) || []).length;
+      if (openBraces > closeBraces) {
+        trimmedJson += '}'.repeat(openBraces - closeBraces);
+      }
+      
+      return JSON.parse(trimmedJson);
     } catch (error) {
-      this.logger.error(`Failed to parse JSON response: ${error}`);
+      this.logger.error(`Failed to parse JSON response: ${error.message}`);
+      // JSON 잘림 시 status PASS 여부 확인 루틴 (복구 불가 시 최소 데이터)
+      if (cleanJson.includes('"status": "PASS"')) return { status: 'PASS' };
       return {};
     }
   }
 
-  /**
-   * ID로 모범 답안 조회
-   */
   findById(id: string): GoldenStandard | undefined {
     return this.storage.get(id);
   }
 
-  /**
-   * 질문 ID로 모범 답안 조회
-   */
   findByQuestionId(questionId: string): GoldenStandard | undefined {
-    for (const standard of this.storage.values()) {
-      if (standard.questionId === questionId) {
-        return standard;
-      }
-    }
-    return undefined;
+    return Array.from(this.storage.values()).find(s => s.questionId === questionId);
   }
 
-  /**
-   * 모든 모범 답안 조회
-   */
   findAll(): GoldenStandard[] {
     return Array.from(this.storage.values());
   }
